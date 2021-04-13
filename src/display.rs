@@ -10,8 +10,8 @@ use nrf52833_hal::gpio::p0::P0_31;
 use nrf52833_hal::gpio::p1::P1_05;
 use nrf52833_hal::gpio::Output;
 use nrf52833_hal::gpio::PushPull;
-use nrf52833_hal::pac::TIMER4;
 use nrf52833_hal::prelude::*;
+use nrf52833_hal::timer::Instance;
 use tiny_led_matrix::DisplayControl;
 use tiny_led_matrix::DisplayTimer;
 use tiny_led_matrix::Frame;
@@ -47,31 +47,11 @@ impl DisplayControl for DisplayPins {
     fn initialise_for_display(&mut self) {}
 
     fn display_row_leds(&mut self, row: usize, cols: u32) {
-        if row == 0 {
-            self.row1.set_high().expect("failed to set display pins");
-        } else {
-            self.row1.set_low().expect("failed to set display pins");
-        }
-        if row == 1 {
-            self.row2.set_high().expect("failed to set display pins");
-        } else {
-            self.row2.set_low().expect("failed to set display pins");
-        }
-        if row == 2 {
-            self.row3.set_high().expect("failed to set display pins");
-        } else {
-            self.row3.set_low().expect("failed to set display pins");
-        }
-        if row == 3 {
-            self.row4.set_high().expect("failed to set display pins");
-        } else {
-            self.row4.set_low().expect("failed to set display pins");
-        }
-        if row == 4 {
-            self.row5.set_high().expect("failed to set display pins");
-        } else {
-            self.row5.set_low().expect("failed to set display pins");
-        }
+        self.row1.set_low().expect("failed to set display pins");
+        self.row2.set_low().expect("failed to set display pins");
+        self.row3.set_low().expect("failed to set display pins");
+        self.row4.set_low().expect("failed to set display pins");
+        self.row5.set_low().expect("failed to set display pins");
 
         if cols & 0b00001 > 0 {
             self.col1.set_low().expect("failed to set display pins");
@@ -98,6 +78,22 @@ impl DisplayControl for DisplayPins {
         } else {
             self.col5.set_high().expect("failed to set display pins");
         }
+
+        if row == 0 {
+            self.row1.set_high().expect("failed to set display pins");
+        }
+        if row == 1 {
+            self.row2.set_high().expect("failed to set display pins");
+        }
+        if row == 2 {
+            self.row3.set_high().expect("failed to set display pins");
+        }
+        if row == 3 {
+            self.row4.set_high().expect("failed to set display pins");
+        }
+        if row == 4 {
+            self.row5.set_high().expect("failed to set display pins");
+        }
     }
 
     fn light_current_row_leds(&mut self, cols: u32) {
@@ -120,31 +116,64 @@ impl DisplayControl for DisplayPins {
     }
 }
 
-pub struct MicrobitDisplayTimer(pub TIMER4);
-impl DisplayTimer for MicrobitDisplayTimer {
+pub struct MicrobitDisplayTimer<T: Instance>(pub T);
+impl<T: Instance> DisplayTimer for MicrobitDisplayTimer<T> {
     fn initialise_cycle(&mut self, ticks: u16) {
-        self.0.prescaler.write(|w| unsafe { w.bits(4) });
-        self.0.cc[0].write(|w| unsafe { w.cc().bits(ticks.into()) });
-        self.0.tasks_clear.write(|w| unsafe { w.bits(1) });
-        self.0.shorts.modify(|_, w| w.compare0_clear().enabled());
-        self.0.tasks_start.write(|w| unsafe { w.bits(1) });
-        self.0.intenset.modify(|_, w| w.compare0().set());
+        // Stop the timer.
+        self.0
+            .as_timer0()
+            .tasks_stop
+            .write(|w| w.tasks_stop().set_bit());
+        // Clear the timer.
+        self.0
+            .as_timer0()
+            .tasks_clear
+            .write(|w| w.tasks_clear().set_bit());
+        // Set frequency to 1MHz (16MHz / 2^4). This is the frequency used by the official runtime.
+        // It's called a prescaler because it's still using the same underlying, 16MHz clock,
+        // but only counts every 4th tick (in this case). So, it's just _scaling_ the output.
+        self.0
+            .as_timer0()
+            .prescaler
+            .write(|w| unsafe { w.prescaler().bits(4) });
+        // Set the timer's first Capture/Compare register to `ticks`, and then enable the corresponding interrupt.
+        // Every time the counter is incremented, the timer will check if it equals this value, and if so trigger the interrupt.
+        // So this sets up the timer to send an interrupt once its counter reaches `ticks`.
+        self.0.as_timer0().cc[0].write(|w| unsafe { w.cc().bits(ticks.into()) });
+        self.0.as_timer0().intenset.write(|w| w.compare0().set());
+        // Set the timer to clear itself when it reaches `ticks`.
+        // If we don't do this, the counter will just continue until it overflows.
+        self.0
+            .as_timer0()
+            .shorts
+            .write(|w| w.compare0_clear().enabled());
+        // Start the timer.
+        self.0
+            .as_timer0()
+            .tasks_start
+            .write(|w| w.tasks_start().set_bit());
     }
 
     fn enable_secondary(&mut self) {
-        self.0.intenset.modify(|_, w| w.compare1().set());
+        self.0
+            .as_timer0()
+            .intenset
+            .write(|w| w.compare1().set());
     }
 
     fn disable_secondary(&mut self) {
-        self.0.intenset.modify(|_, w| w.compare1().clear_bit());
+        self.0
+            .as_timer0()
+            .intenset
+            .write(|w| w.compare1().clear_bit());
     }
 
     fn program_secondary(&mut self, ticks: u16) {
-        self.0.cc[1].write(|w| unsafe { w.cc().bits(ticks.into()) });
+        self.0.as_timer0().cc[1].write(|w| unsafe { w.cc().bits(ticks.into()) });
     }
 
     fn check_primary(&mut self) -> bool {
-        let reg = &self.0.events_compare[0];
+        let reg = &self.0.as_timer0().events_compare[0];
         let fired = reg.read().bits() != 0;
         if fired {
             reg.reset();
@@ -153,7 +182,7 @@ impl DisplayTimer for MicrobitDisplayTimer {
     }
 
     fn check_secondary(&mut self) -> bool {
-        let reg = &self.0.events_compare[1];
+        let reg = &self.0.as_timer0().events_compare[1];
         let fired = reg.read().bits() != 0;
         if fired {
             reg.reset();

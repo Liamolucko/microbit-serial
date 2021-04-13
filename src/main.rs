@@ -4,6 +4,7 @@
 extern crate panic_semihosting;
 
 mod display;
+mod timer;
 
 use display::DisplayPins;
 use display::GreyscaleImage;
@@ -17,6 +18,7 @@ use nrf52833_hal::gpio::Floating;
 use nrf52833_hal::gpio::Input;
 use nrf52833_hal::gpio::Level;
 use nrf52833_hal::pac::TIMER0;
+use nrf52833_hal::pac::TIMER4;
 use nrf52833_hal::prelude::*;
 use nrf52833_hal::Timer;
 use rtic::app;
@@ -27,7 +29,7 @@ use tiny_led_matrix::Frame;
 const APP: () = {
     struct Resources {
         display_pins: DisplayPins,
-        display_timer: MicrobitDisplayTimer,
+        display_timer: MicrobitDisplayTimer<TIMER4>,
         display: Display<MicrobitFrame>,
         btn_a: P0_14<Input<Floating>>,
         btn_b: P0_23<Input<Floating>>,
